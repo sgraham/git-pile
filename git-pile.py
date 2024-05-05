@@ -229,6 +229,12 @@ def usage(msg):
 def main():
     if len(sys.argv) < 2:
         print_pile()
+    elif sys.argv[1] == "register-aliases":
+        get_git("config", "--global", "alias.new", "pile new")
+        get_git("config", "--global", "alias.more", "pile more")
+        get_git("config", "--global", "alias.snap", "pile snap")
+        get_git("config", "--global", "alias.sync", "pile sync")
+        log("aliases added")
     elif sys.argv[1] == "new":
         if len(sys.argv) < 3:
             usage("new <branch-name>")
@@ -242,7 +248,7 @@ def main():
     elif sys.argv[1] == "sync":
         sync_pile(get_pile())
     else:
-        print('unknown command "%s"' % sys.argv[1])
+        log('unknown command "%s"' % sys.argv[1])
         sys.exit(1)
 
 
