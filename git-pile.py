@@ -9,7 +9,7 @@ import sys
 
 from ghapi.all import GhApi
 
-api = GhApi()
+ghapi = GhApi()
 
 SPLIT_ON = "44f0da21-87ba-43ca-98d9-3b348d84e7c5"
 
@@ -46,6 +46,13 @@ def get_git(*args, ignore_errors=False):
     # print("git", args)
     proc = subprocess.run(["git"] + args, check=not ignore_errors, capture_output=True)
     return proc.stdout.decode("utf-8").strip()
+
+
+def get_git_and_exitcode(*args):
+    args = list(args)
+    # print("git", args)
+    proc = subprocess.run(["git"] + args, check=False, capture_output=True)
+    return proc.stdout.decode("utf-8").strip(), proc.returncode
 
 
 def output_git(*args):
@@ -137,30 +144,16 @@ def create_squash_commit(br, ups):
 def squash_to_pr_and_push(br, ups):
     commit = create_squash_commit(br, ups)
     pr_br = "pr/" + br
-    get_git("branch", "--force", pr_br, commit)
-    get_git("push", "origin", pr_br + ":" + username_prefixed_br(br), "-f")
+    result, exitcode = get_git_and_exitcode("diff", "--exit-code", commit, pr_br)
+    if exitcode == 0:
+        return False
+    else:
+        get_git("branch", "--force", pr_br, commit)
+        get_git("push", "origin", pr_br + ":" + username_prefixed_br(br), "-f")
+        return True
 
 
-def remove_pr_branch(br):
-    pr_br = "pr/" + br
-    get_git("branch", "-D", pr_br)
-
-
-def push_pr_branches_for_pile(pile):
-    log("snapshotting")
-
-    for br, ups in pile:
-        print("  " + br + "...", end="")
-        squash_to_pr_and_push(br, ups)
-        print(" %s" % get_br_pr_url(br))
-
-    for br, _ in pile:
-        remove_pr_branch(br)
-
-    log("done")
-
-
-def create_draft_pr(br, ups):
+def get_owner_and_repo():
     url = get_git("remote", "get-url", "origin")
     before, _, path = url.partition(":")
     user, _, repo = path.partition("/")
@@ -168,13 +161,52 @@ def create_draft_pr(br, ups):
         print("couldn't parse origin %s" % url)
         sys.exit(1)
     repo = repo[: -len(".git")]
+    return user, repo
+
+
+def update_pile_pr_comment(pile, cur):
+    owner, repo = get_owner_and_repo()
+    num_in_pile = len(pile)
+    msg = "Pile:\n"
+    for i, (br, _) in enumerate(pile):
+        msg += "[%d/%d] " % (i + 1, num_in_pile)
+        if cur == br:
+            msg += "%s ← HERE\n" % username_prefixed_br(br)
+        else:
+            msg += "%s %s\n" % (get_br_pr_url(br), username_prefixed_br(br))
+
+    comment_id_to_update = get_br_pr_comment_id(cur)
+    ghapi.issues.update_comment(
+        owner=owner, repo=repo, comment_id=int(comment_id_to_update), body=msg
+    )
+
+
+def push_pr_branches_for_pile(pile):
+    log("snapshotting")
+
+    for br, ups in pile:
+        print("  " + br + "...", end="")
+        did_push = squash_to_pr_and_push(br, ups)
+        if did_push:
+            print(" %s" % get_br_pr_url(br))
+        else:
+            print(" (unchanged) %s" % get_br_pr_url(br))
+
+    for br, _ in pile:
+        update_pile_pr_comment(pile, br)
+
+    log("done")
+
+
+def create_draft_pr(br, ups):
+    owner, repo = get_owner_and_repo()
     base = ups
     if base == "origin/main":
         base = "main"
     else:
         base = username_prefixed_br(base)
-    data = api.pulls.create(
-        owner=user,
+    data = ghapi.pulls.create(
+        owner=owner,
         repo=repo,
         title=br,
         base=base,
@@ -190,9 +222,24 @@ def create_draft_pr(br, ups):
     )
     get_git("config", "--local", "branch.%s.pile-pr-number" % br, str(data["number"]))
 
+    comment_data = ghapi.issues.create_comment(
+        owner=owner, repo=repo, issue_number=data["number"], body="Pile:\n..."
+    )
+    get_git(
+        "config", "--local", "branch.%s.pile-comment-id" % br, str(comment_data["id"])
+    )
+
 
 def get_br_pr_url(br):
     return get_git("config", "--local", "branch.%s.pile-pr-html-url" % br)
+
+
+def get_br_pr_number(br):
+    return get_git("config", "--local", "branch.%s.pile-pr-number" % br)
+
+
+def get_br_pr_comment_id(br):
+    return get_git("config", "--local", "branch.%s.pile-comment-id" % br)
 
 
 def make_new_branch(br, ups):
